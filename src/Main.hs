@@ -1,10 +1,36 @@
+#!/usr/bin/env stack
+{- stack
+    --resolver lts-6.15
+    --install-ghc
+    runghc
+
+    --package async
+    --package classy-prelude-conduit
+    --package word8
+    --package fsnotify
+    --package optparse-simple
+    --package hspec
+    --package temporary
+-}
+
+{-
+
+Usually, a program like this would be broken up into a library, add
+test suites, and finally layer an executable on top of the whole
+thing. However, one of the goals was to make it easy to review and
+play with the code, so I kept it all in one file. This also makes it
+possible to run this program as a script instead of compiling it as an
+executable, which is what the above Stack information is about.
+
+-}
+
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RankNTypes        #-}
-{-# LANGUAGE ViewPatterns      #-}
 {-# LANGUAGE TemplateHaskell   #-}
+{-# LANGUAGE RankNTypes #-}
 import           ClassyPrelude.Conduit
+import           Control.Concurrent.Async (Concurrently (..))
 import qualified Data.ByteString.Builder as BB
 import           Data.Conduit.Blaze      (builderToByteString)
 import           Data.Conduit.Network    (AppData, appSink, appSource,
@@ -14,12 +40,16 @@ import           Data.Word8              (_0, _9, _colon, _hyphen)
 import           System.Directory        (canonicalizePath,
                                           createDirectoryIfMissing,
                                           removeFile, doesFileExist)
-import           System.FilePath         (takeDirectory)
+import           System.FilePath         (takeDirectory, addTrailingPathSeparator)
 import qualified System.FSNotify         as FS
 import           System.IO               (IOMode (ReadMode), hFileSize,
                                           openBinaryFile)
+import           System.Environment      (withArgs)
 import Paths_dumb_file_mirror (version)
 import Options.Applicative.Simple (simpleVersion, simpleOptions, argument, auto, str, metavar, addCommand)
+import Test.Hspec
+import Test.Hspec.QuickCheck (prop)
+import System.IO.Temp (withSystemTempDirectory)
 
 desc :: String
 desc = unlines
@@ -45,6 +75,7 @@ main = do
                 <$> hostArg
                 <*> portArg
                 <*> dirArg
+            addCommand "test" "Run the test suite" id $ pure spec
     cmd
   where
     hostArg = argument str (metavar "HOST")
@@ -58,24 +89,47 @@ remote port dir =
     runTCPServer (serverSettings port "*") (handleAny print . run)
   where
     run :: AppData -> IO ()
-    run appData = runResourceT $ appSource appData $$ forever (recvFile dir)
+    run appData = runResourceT $ appSource appData $$ whileHasData (recvFile dir)
+
+whileHasData :: Monad m => Sink ByteString m () -> Sink ByteString m ()
+whileHasData inner =
+    loop
+  where
+    loop = do
+        mnext <- peekCE
+        case mnext of
+            Nothing -> return ()
+            Just _next -> do
+                inner
+                loop
+
+sourceFileChanges :: MonadResource m
+                  => FilePath
+                  -> Producer m FilePath
+sourceFileChanges root = bracketP FS.startManager FS.stopManager $ \man -> do
+    root' <- liftIO $ canonicalizePath root
+    chan <- liftIO newTChanIO
+    liftIO $ void $ FS.watchTree man root' (const True) $ \event -> do
+        let fp = FS.eventPath event
+        case stripPrefix (addTrailingPathSeparator root') fp of
+            Nothing -> error $ "sourceFileChanges: prefix not found " ++ show (root', fp)
+            Just suffix
+                | null suffix -> return ()
+                | otherwise -> atomically $ writeTChan chan suffix
+    forever $ do
+        suffix <- atomically $ readTChan chan
+        yield suffix
 
 local :: String -- ^ host
       -> Int -- ^ port
       -> FilePath -- ^ root directory
       -> IO ()
-local host port dir = runTCPClient (clientSettings port hostBytes) $ \appData -> do
-    dir' <- canonicalizePath dir
-    FS.withManager $ \man -> do
-        chan <- newTChanIO
-        void $ FS.watchTree man dir (const True) $ \event -> do
-            let fp = FS.eventPath event
-                Just suffix = stripPrefix dir' fp >>= stripPrefix "/"
-            atomically $ writeTChan chan suffix
-        let src = forever $ do
-                suffix <- atomically $ readTChan chan
-                sendFile dir' suffix
-        runResourceT $ src $$ builderToByteString =$ appSink appData
+local host port dir = runTCPClient (clientSettings port hostBytes) $ \appData ->
+    runResourceT
+        $ sourceFileChanges dir
+       $$ awaitForever (sendFile dir)
+       =$ builderToByteString
+       =$ appSink appData
   where
     hostBytes = encodeUtf8 (pack host)
 
@@ -103,24 +157,34 @@ sendFile root fp = do
     fpFull = root </> fp
     fpBS = encodeUtf8 (pack fp :: Text)
 
-recvInteger :: (MonadThrow m, Integral i) => Consumer ByteString m i
+recvInteger :: (MonadThrow m, Integral i) => Sink ByteString m i
 recvInteger = do
-    (isNeg, x) <- (takeWhileCE (/= _colon) =$= foldMCE addDigit (False, 0))
-                  <* getColon
+    mnext <- peekCE
+    next <-
+        case mnext of
+            Nothing -> throwM EndOfStream
+            Just next -> return next
+    isNeg <-
+        if next == _hyphen
+            then do
+                dropCE 1
+                return True
+            else return False
+
+    x <- (takeWhileCE (/= _colon) =$= foldMCE addDigit 0)
+
+    mw <- headCE
+    unless (mw == Just _colon) (throwM (MissingColon mw))
+
     return $! if isNeg then negate x else x
   where
-    addDigit (isNeg, total) w
-        | _0 <= w && w <= _9 = return $! (isNeg, total * 10 + fromIntegral (w - _0))
-        | w == _hyphen = return $! (True, total)
+    addDigit total w
+        | _0 <= w && w <= _9 = return (total * 10 + fromIntegral (w - _0))
         | otherwise = throwM (InvalidByte w)
-
-    getColon = do
-        mw <- headCE
-        unless (mw == Just _colon) (throwM (MissingColon mw))
 
 recvFile :: MonadResource m
          => FilePath -- ^ root
-         -> Consumer ByteString m ()
+         -> Sink ByteString m ()
 recvFile root = do
     fpLen <- recvInteger
     fpRelText <- takeCE fpLen =$= decodeUtf8C =$= foldC
@@ -134,5 +198,57 @@ recvFile root = do
 
 data RecvIntegerException = InvalidByte Word8
                           | MissingColon (Maybe Word8)
+                          | EndOfStream
     deriving (Show, Typeable)
 instance Exception RecvIntegerException
+
+spec :: IO ()
+spec = withArgs [] $ hspec $ do
+    prop "sendInteger/recvInteger is idempotent" $ \i -> do
+        res <- sendInteger i $$ builderToByteString =$ recvInteger
+        res `shouldBe` i
+    it "create and delete files" $
+      withSystemTempDirectory "src" $ \srcDir ->
+      withSystemTempDirectory "dst" $ \dstDir -> do
+
+        let relPath = "somepath.txt"
+            content = "This is the content of the file" :: ByteString
+
+        writeFile (srcDir </> relPath) content
+
+        runResourceT
+            $ sendFile srcDir relPath
+           $$ builderToByteString
+           =$ recvFile dstDir
+
+        content' <- readFile (dstDir </> relPath)
+        content' `shouldBe` content
+
+        removeFile (srcDir </> relPath)
+
+        runResourceT
+            $ sendFile srcDir relPath
+           $$ builderToByteString
+           =$ recvFile dstDir
+
+        exists <- doesFileExist (dstDir </> relPath)
+        exists `shouldBe` False
+    it "sourceFileChanges" $ withSystemTempDirectory "source-file-changes" $ \root -> do
+        chan <- newTChanIO
+        let actions =
+                [ ("foo", Just "hello")
+                , ("bar", Just "world")
+                , ("foo", Just "!")
+                , ("bar", Nothing)
+                , ("foo", Nothing)
+                ]
+        runConcurrently $
+            Concurrently (runResourceT $ sourceFileChanges root $$ mapM_C (atomically . writeTChan chan)) <|>
+            Concurrently (forM_ actions $ \(path, mcontents) -> do
+                threadDelay 100000
+                case mcontents of
+                    Nothing -> removeFile (root </> path)
+                    Just contents -> writeFile (root </> path) (contents :: ByteString)) <|>
+            Concurrently (forM_ actions $ \(expected, _) -> do
+                actual <- atomically $ readTChan chan
+                actual `shouldBe` expected)

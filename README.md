@@ -12,15 +12,22 @@ connection open to decrease latency between writes. It is also a fully
 cross-platform tool, and uses OS-specific file watching APIs when
 available.
 
-This is also a good demonstration of using Haskell and the
-[conduit library](https://github.com/snoyberg/conduit#readme) for
+I initially wrote this tool to make our lives a little bit nicer when
+doing some coding on remote build machines. However, it turned out to
+be a good demonstration of some practical Haskell, as well as using
+the [conduit library](https://github.com/snoyberg/conduit#readme) for
 non-trivial network operations.
 
 ## Get started quickly
 
 * Clone the repo: `git clone https://github.com/fpco/dumb-file-mirror`
-* Get the [Haskell Stack build tool](https://haskell-lang.org/get-started)
-* Inside the `dumb-file-mirror` directory, run `stack install --install-ghc`
+* Get the
+  [Haskell Stack build tool](https://haskell-lang.org/get-started). On
+  most POSIX systems, just run `curl -sSL
+  https://get.haskellstack.org/ | sh`
+* Inside the `dumb-file-mirror` directory, run `stack install
+  --install-ghc`. (This will take a while, it's going to set up an
+  entire toolchain and build a bunch of dependencies.)
 * Run `dumb-file-mirror remote 1234 dest-dir` on the remote machine
 * Run `dumb-file-mirror local remote-host-name 1234 src-dir` on the local machine
 * Edit away!

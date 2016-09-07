@@ -77,3 +77,4 @@ install:
 
 script:
 - stack --no-terminal $ARGS test --bench --no-run-benchmarks --haddock --no-haddock-deps
+- stack exec dumb-file-mirror test
