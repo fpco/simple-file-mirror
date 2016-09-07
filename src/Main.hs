@@ -1,28 +1,3 @@
-#!/usr/bin/env stack
-{- stack
-    --resolver lts-6.15
-    --install-ghc
-    runghc
-
-    --package classy-prelude-conduit
-    --package word8
-    --package fsnotify
-    --package optparse-simple
-    --package hspec
-    --package temporary
--}
-
-{-
-
-Usually, a program like this would be broken up into a library, add
-test suites, and finally layer an executable on top of the whole
-thing. However, one of the goals was to make it easy to review and
-play with the code, so I kept it all in one file. This also makes it
-possible to run this program as a script instead of compiling it as an
-executable, which is what the above Stack information is about.
-
--}
-
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell   #-}
