@@ -17,7 +17,7 @@ executable dumb-file-mirror
   hs-source-dirs:      src
   main-is:             Main.hs
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N
-  build-depends:       base < 5
+  build-depends:       base >= 4.8 && < 5
                      , async
                      , bytestring
                      , bytestring-builder

@@ -24,13 +24,12 @@ executable, which is what the above Stack information is about.
 
 -}
 
-{-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell   #-}
 {-# LANGUAGE RankNTypes #-}
 import           ClassyPrelude.Conduit
-import           Control.Concurrent.Async (Concurrently (..))
+import qualified Control.Concurrent.Async as Async
 import qualified Data.ByteString.Builder as BB
 import           Data.Conduit.Blaze      (builderToByteString)
 import           Data.Conduit.Network    (AppData, appSink, appSource,
@@ -242,13 +241,13 @@ spec = withArgs [] $ hspec $ do
                 , ("bar", Nothing)
                 , ("foo", Nothing)
                 ]
-        runConcurrently $
-            Concurrently (runResourceT $ sourceFileChanges root $$ mapM_C (atomically . writeTChan chan)) <|>
-            Concurrently (forM_ actions $ \(path, mcontents) -> do
+        Async.runConcurrently $
+            Async.Concurrently (runResourceT $ sourceFileChanges root $$ mapM_C (atomically . writeTChan chan)) <|>
+            Async.Concurrently (forM_ actions $ \(path, mcontents) -> do
                 threadDelay 100000
                 case mcontents of
                     Nothing -> removeFile (root </> path)
                     Just contents -> writeFile (root </> path) (contents :: ByteString)) <|>
-            Concurrently (forM_ actions $ \(expected, _) -> do
+            Async.Concurrently (forM_ actions $ \(expected, _) -> do
                 actual <- atomically $ readTChan chan
                 actual `shouldBe` expected)
