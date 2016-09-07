@@ -4,7 +4,6 @@
     --install-ghc
     runghc
 
-    --package async
     --package classy-prelude-conduit
     --package word8
     --package fsnotify
@@ -29,7 +28,6 @@ executable, which is what the above Stack information is about.
 {-# LANGUAGE TemplateHaskell   #-}
 {-# LANGUAGE RankNTypes #-}
 import           ClassyPrelude.Conduit
-import qualified Control.Concurrent.Async as Async
 import qualified Data.ByteString.Builder as BB
 import           Data.Conduit.Blaze      (builderToByteString)
 import           Data.Conduit.Network    (AppData, appSink, appSource,
@@ -46,7 +44,7 @@ import           System.IO               (IOMode (ReadMode), hFileSize,
 import           System.Environment      (withArgs)
 import Paths_dumb_file_mirror (version)
 import Options.Applicative.Simple (simpleVersion, simpleOptions, argument, auto, str, metavar, addCommand)
-import Test.Hspec
+import Test.Hspec (hspec, it, shouldBe)
 import Test.Hspec.QuickCheck (prop)
 import System.IO.Temp (withSystemTempDirectory)
 
@@ -147,14 +145,17 @@ sendFile root fp = do
     sendInteger $ fromIntegral $ length fpBS
     yield $ toBuilder fpBS
 
-    exists <- liftIO $ doesFileExist fpFull
+    let open = tryIO $ openBinaryFile fpFull ReadMode
+        close (Left _err) = return ()
+        close (Right h) = hClose h
 
-    if exists
-        then bracketP (openBinaryFile fpFull ReadMode) hClose $ \h -> do
-            size <- liftIO $ hFileSize h
-            sendInteger size
-            sourceHandle h =$= mapC BB.byteString
-        else sendInteger (-1)
+    bracketP open close $ \eh ->
+        case eh of
+            Left _ex -> sendInteger (-1)
+            Right h -> do
+                size <- liftIO $ hFileSize h
+                sendInteger size
+                sourceHandle h =$= mapC BB.byteString
     yield flushBuilder
   where
     fpFull = root </> fp
@@ -249,13 +250,13 @@ spec = withArgs [] $ hspec $ do
                 , ("bar", Nothing)
                 , ("foo", Nothing)
                 ]
-        Async.runConcurrently $
-            Async.Concurrently (runResourceT $ sourceFileChanges root $$ mapM_C (atomically . writeTChan chan)) <|>
-            Async.Concurrently (forM_ actions $ \(path, mcontents) -> do
+        runConcurrently $
+            Concurrently (runResourceT $ sourceFileChanges root $$ mapM_C (atomically . writeTChan chan)) <|>
+            Concurrently (forM_ actions $ \(path, mcontents) -> do
                 threadDelay 100000
                 case mcontents of
                     Nothing -> removeFile (root </> path)
                     Just contents -> writeFile (root </> path) (contents :: ByteString)) <|>
-            Async.Concurrently (forM_ actions $ \(expected, _) -> do
+            Concurrently (forM_ actions $ \(expected, _) -> do
                 actual <- atomically $ readTChan chan
                 actual `shouldBe` expected)
