@@ -32,6 +32,13 @@ non-trivial network operations.
 * Run `dumb-file-mirror local remote-host-name 1234 src-dir` on the local machine
 * Edit away!
 
-You can of course get a lot more inventive with this, especially with SSH tunneling.
+You can of course get a lot more inventive with this, especially with
+SSH tunneling. For example, try running these in two different
+terminals:
+
+```shell
+$ ssh user@host -L 12345:localhost:12345 /path/to/bin/dumb-file-mirror remote 12345 /some/dest/dir
+$ dumb-file-mirror local localhost 12345 /some/source/dir
+```
 
 ## How it works
