@@ -112,13 +112,18 @@ foreverCE inner =
 sendInteger :: Monad m => Integer -> Producer m BlazeBuilder
 sendInteger i = yield $ BB.integerDec i <> BB.word8 _colon
 
+sendFilePath :: Monad m => FilePath -> Producer m BlazeBuilder
+sendFilePath fp = do
+    let bs = encodeUtf8 $ pack fp :: ByteString
+    sendInteger $ fromIntegral $ length bs
+    yield $ toBuilder bs
+
 sendFile :: MonadResource m
          => FilePath -- ^ root
          -> FilePath -- ^ relative
          -> Producer m BlazeBuilder
 sendFile root fp = do
-    sendInteger $ fromIntegral $ length fpBS
-    yield $ toBuilder fpBS
+    sendFilePath fp
 
     let open = tryIO $ openBinaryFile fpFull ReadMode
         close (Left _err) = return ()
@@ -134,7 +139,6 @@ sendFile root fp = do
     yield flushBuilder
   where
     fpFull = root </> fp
-    fpBS = encodeUtf8 (pack fp :: Text)
 
 recvInteger :: (MonadThrow m, Integral i) => Sink ByteString m i
 recvInteger = do
@@ -161,13 +165,18 @@ recvInteger = do
         | _0 <= w && w <= _9 = return (total * 10 + fromIntegral (w - _0))
         | otherwise = throwM (InvalidByte w)
 
+recvFilePath :: MonadThrow m => Sink ByteString m FilePath
+recvFilePath = do
+    fpLen <- recvInteger
+    fpRelText <- takeCE fpLen =$= decodeUtf8C =$= foldC
+    return $ unpack fpRelText
+
 recvFile :: MonadResource m
          => FilePath -- ^ root
          -> Sink ByteString m ()
 recvFile root = do
-    fpLen <- recvInteger
-    fpRelText <- takeCE fpLen =$= decodeUtf8C =$= foldC
-    let fp = root </> unpack fpRelText
+    fpRel <- recvFilePath
+    let fp = root </> fpRel
     fileLen <- recvInteger
     if fileLen == (-1)
         then liftIO $ void $ tryIO $ removeFile fp
@@ -190,6 +199,9 @@ spec = withArgs [] $ hspec $ do
     prop "sendInteger/recvInteger is idempotent" $ \i -> do
         res <- sendInteger i $$ builderToByteString =$ recvInteger
         res `shouldBe` i
+    prop "sendFilePath/recvFilePath is idempotent" $ \fp -> do
+        res <- sendFilePath fp $$ builderToByteString =$ recvFilePath
+        res `shouldBe` fp
     it "create and delete files" $
       withSystemTempDirectory "src" $ \srcDir ->
       withSystemTempDirectory "dst" $ \dstDir -> do
