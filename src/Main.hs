@@ -88,19 +88,24 @@ remote port dir =
     runTCPServer (serverSettings port "*") (handleAny print . run)
   where
     run :: AppData -> IO ()
-    run appData = runResourceT $ appSource appData $$ whileHasData (recvFile dir)
+    run appData = runResourceT $ appSource appData $$ foreverCE (recvFile dir)
 
-whileHasData :: Monad m => Sink ByteString m () -> Sink ByteString m ()
-whileHasData inner =
-    loop
+local :: String -- ^ host
+      -> Int -- ^ port
+      -> FilePath -- ^ root directory
+      -> IO ()
+local host port dir = runTCPClient (clientSettings port hostBytes) $ \appData ->
+    runResourceT
+        $ sourceFileChanges dir
+       $$ awaitForever (sendFile dir)
+       =$ builderToByteString
+       =$ appSink appData
   where
-    loop = do
-        mnext <- peekCE
-        case mnext of
-            Nothing -> return ()
-            Just _next -> do
-                inner
-                loop
+    hostBytes = encodeUtf8 (pack host)
+
+---------------------------------------
+-- CONDUIT UTILITY FUNCTIONS
+---------------------------------------
 
 sourceFileChanges :: MonadResource m
                   => FilePath
@@ -119,18 +124,17 @@ sourceFileChanges root = bracketP FS.startManager FS.stopManager $ \man -> do
         suffix <- atomically $ readTChan chan
         yield suffix
 
-local :: String -- ^ host
-      -> Int -- ^ port
-      -> FilePath -- ^ root directory
-      -> IO ()
-local host port dir = runTCPClient (clientSettings port hostBytes) $ \appData ->
-    runResourceT
-        $ sourceFileChanges dir
-       $$ awaitForever (sendFile dir)
-       =$ builderToByteString
-       =$ appSink appData
+foreverCE :: Monad m => Sink ByteString m () -> Sink ByteString m ()
+foreverCE inner =
+    loop
   where
-    hostBytes = encodeUtf8 (pack host)
+    loop = do
+        mnext <- peekCE
+        case mnext of
+            Nothing -> return ()
+            Just _next -> do
+                inner
+                loop
 
 sendInteger :: Monad m => Integer -> Producer m BlazeBuilder
 sendInteger i = yield $ BB.integerDec i <> BB.word8 _colon
@@ -200,6 +204,10 @@ data RecvIntegerException = InvalidByte Word8
                           | EndOfStream
     deriving (Show, Typeable)
 instance Exception RecvIntegerException
+
+---------------------------------------
+-- TEST SUITE
+---------------------------------------
 
 spec :: IO ()
 spec = withArgs [] $ hspec $ do
