@@ -244,7 +244,7 @@ sendFile root fp = do
 sendInteger :: Monad m => Integer -> Producer m ByteString
 sendInteger i = yield $ encodeUtf8 $ tshow i ++ ":"
 
--- | Send a filepath. We do this by:
+-- | Send a filepath.
 sendFilePath :: Monad m => FilePath -> Producer m ByteString
 sendFilePath fp = do
     -- UTF-8 encode the filepath
@@ -256,50 +256,90 @@ sendFilePath fp = do
     -- Send the actual path
     yield bs
 
+-- | Receive a file sent by sendFile
 recvFile :: MonadResource m
-         => FilePath -- ^ root
+         => FilePath -- ^ directory to store files in
          -> Sink ByteString m ()
 recvFile root = do
+    -- Get the relative path to store in
     fpRel <- recvFilePath
+
+    -- Prepend with the root directory to get a complete path
     let fp = root </> fpRel
+
+    -- Get the size of the file
     fileLen <- recvInteger
+
     if fileLen == (-1)
+        -- We use -1 to indicate the file should be removed. Go ahead
+        -- and call removeFile, but ignore any IO exceptions that
+        -- occur when doing so (in case the file doesn't exist
+        -- locally, for example)
         then liftIO $ void $ tryIO $ removeFile fp
         else do
+            -- Create the containing directory
             liftIO $ createDirectoryIfMissing True $ takeDirectory fp
+
+            -- Stream out the specified number of bytes and write them
+            -- into the file
             takeCE fileLen =$= sinkFile fp
 
+-- | Receive an integer sent by sendInteger.
 recvInteger :: (MonadThrow m, Integral i) => Sink ByteString m i
 recvInteger = do
+    -- Check for a hyphen (indicating a negative number). First we
+    -- peek at the next byte, leaving it on the stream in case it's
+    -- not a hyphen.
     mnext <- peekCE
+
+    -- We need to have some data. If we got a Nothing, we have an end
+    -- of stream, so we should throw that exception.
     next <-
         case mnext of
-            Nothing -> throwM EndOfStream
+            Nothing -> throw EndOfStream
             Just next -> return next
+
     isNeg <-
         if next == _hyphen
             then do
+                -- We did get a hyphen, so drop that byte from the
+                -- stream and return True
                 dropCE 1
                 return True
+
+                -- Not a hyphen, so return False and don't drop any
+                -- data
             else return False
 
+    -- Take all bytes up until the terminating colon, and fold over
+    -- them with addDigit to sum up the result
     x <- takeWhileCE (/= _colon) =$= foldMCE addDigit 0
 
+    -- Make sure we actually have a colon at the end
     mw <- headCE
     unless (mw == Just _colon) (throwM (MissingColon mw))
 
+    -- Negate the answer if necessary
     return $! if isNeg then negate x else x
   where
     addDigit total w
         | _0 <= w && w <= _9 = return (total * 10 + fromIntegral (w - _0))
         | otherwise = throwM (InvalidByte w)
 
+-- | Receive a file path sent with sendFilePath
 recvFilePath :: MonadThrow m => Sink ByteString m FilePath
 recvFilePath = do
+    -- Get the byte count
     fpLen <- recvInteger
+
+    -- Read in the given number of bytes, decode as UTF-8 text, and
+    -- then fold all of the chunks into a single Text value
     fpRelText <- takeCE fpLen =$= decodeUtf8C =$= foldC
+
+    -- Unpack the text value into a FilePath
     return $ unpack fpRelText
 
+-- | Define an exception type for when something goes wrong
 data RecvIntegerException = InvalidByte Word8
                           | MissingColon (Maybe Word8)
                           | EndOfStream
@@ -310,21 +350,39 @@ instance Exception RecvIntegerException
 -- TEST SUITE
 ---------------------------------------
 
+-- | Run the test suite. We start off with @withArgs []@ since the
+-- @test@ argument our options parser above expects would confuse
+-- hspec. This isn't normally a problem, when the test suite is in its
+-- own executable, it's only because we're being overly clever with
+-- including the test suite with the executable.
 spec :: IO ()
 spec = withArgs [] $ hspec $ do
+    -- Ensure that sending a value through sendInteger and recvInteger
+    -- comes back with the same result. This will generate random data
+    -- to test against.
     prop "sendInteger/recvInteger is idempotent" $ \i -> do
         res <- sendInteger i $$ recvInteger
         res `shouldBe` i
+
+    -- Ensure that sending a value through sendFilePath and
+    -- recvFilePath comes back with the same result. This also works
+    -- on random data.
     prop "sendFilePath/recvFilePath is idempotent" $ \fp -> do
         res <- sendFilePath fp $$ recvFilePath
         res `shouldBe` fp
+
+    -- A more standard unit test, checking that sending and receiving
+    -- a file does what is expected.
     it "create and delete files" $
+      -- Get temporary source and destination directories
       withSystemTempDirectory "src" $ \srcDir ->
       withSystemTempDirectory "dst" $ \dstDir -> do
 
         let relPath = "somepath.txt"
             content = "This is the content of the file" :: ByteString
 
+        -- Ensure that sending a file that exists makes it appear in
+        -- the destination
         writeFile (srcDir </> relPath) content
 
         runResourceT $ sendFile srcDir relPath $$ recvFile dstDir
@@ -332,6 +390,8 @@ spec = withArgs [] $ hspec $ do
         content' <- readFile (dstDir </> relPath)
         content' `shouldBe` content
 
+        -- Ensure that sending a file that doesn't exist makes it
+        -- disappear in the destination
         removeFile (srcDir </> relPath)
 
         runResourceT $ sendFile srcDir relPath $$ recvFile dstDir
