@@ -21,6 +21,7 @@ executable dumb-file-mirror
   build-depends:       base >= 4.9 && < 5
                      , bytestring
                      , classy-prelude-conduit >= 1.0
+                     , conduit-combinators >= 1.0.6
                      , conduit-extra
                      , directory
                      , filepath
