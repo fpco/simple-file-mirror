@@ -17,8 +17,6 @@
 -- import). You're free to be lazy and simply do something like
 -- `import System.Directory`.
 import           ClassyPrelude.Conduit
-import qualified Data.ByteString.Builder    as BB
-import           Data.Conduit.Blaze         (builderToByteString)
 import           Data.Conduit.FSNotify      (sourceFileChanges, mkFileChangeSettings, eventPath)
 import           Data.Conduit.Network       (appSink, appSource, clientSettings,
                                              runTCPClient, runTCPServer,
@@ -173,14 +171,6 @@ local host port dir =
            -- client.
         $$ awaitForever (sendFile dir . eventPath)
 
-           -- To allow for efficient concatenation, Haskell offers a
-           -- Builder value which efficiently fills up a buffer
-           -- instead of performing multiple buffer copies. This is
-           -- similar to the StringBuilder class from Java. This
-           -- function converts a stream of Builder values into
-           -- completed ByteString values.
-        =$ builderToByteString
-
            -- Send the data to the remote process
         =$ appSink appData
   where
@@ -202,7 +192,7 @@ local host port dir =
 sendFile :: MonadResource m
          => FilePath -- ^ root directory
          -> FilePath -- ^ path relative to root
-         -> Producer m BlazeBuilder
+         -> Producer m ByteString
 sendFile root fp = do
     -- Send the relative file path, so the other side knows where to
     -- put the contents
@@ -243,24 +233,28 @@ sendFile root fp = do
                 size <- liftIO $ hFileSize h
                 sendInteger size
 
-                -- And stream the contents, converting the raw
-                -- ByteStrings into builders for efficient buffer
-                -- packing
-                sourceHandle h =$= mapC BB.byteString
-
-    -- Send a flush signal to ensure that any incomplete chunks get sent over the network
-    yield flushBuilder
+                -- And stream the contents
+                sourceHandle h
   where
     fpFull = root </> fp
 
-sendInteger :: Monad m => Integer -> Producer m BlazeBuilder
-sendInteger i = yield $ BB.integerDec i <> BB.word8 _colon
+-- | Send a raw integer. We follow something like the netstring
+-- protocol, and print the integer in decimal form followed by a
+-- colon.
+sendInteger :: Monad m => Integer -> Producer m ByteString
+sendInteger i = yield $ encodeUtf8 $ tshow i ++ ":"
 
-sendFilePath :: Monad m => FilePath -> Producer m BlazeBuilder
+-- | Send a filepath. We do this by:
+sendFilePath :: Monad m => FilePath -> Producer m ByteString
 sendFilePath fp = do
+    -- UTF-8 encode the filepath
     let bs = encodeUtf8 $ pack fp :: ByteString
+
+    -- Send the number of bytes
     sendInteger $ fromIntegral $ length bs
-    yield $ toBuilder bs
+
+    -- Send the actual path
+    yield bs
 
 recvFile :: MonadResource m
          => FilePath -- ^ root
@@ -319,10 +313,10 @@ instance Exception RecvIntegerException
 spec :: IO ()
 spec = withArgs [] $ hspec $ do
     prop "sendInteger/recvInteger is idempotent" $ \i -> do
-        res <- sendInteger i $$ builderToByteString =$ recvInteger
+        res <- sendInteger i $$ recvInteger
         res `shouldBe` i
     prop "sendFilePath/recvFilePath is idempotent" $ \fp -> do
-        res <- sendFilePath fp $$ builderToByteString =$ recvFilePath
+        res <- sendFilePath fp $$ recvFilePath
         res `shouldBe` fp
     it "create and delete files" $
       withSystemTempDirectory "src" $ \srcDir ->
@@ -333,21 +327,14 @@ spec = withArgs [] $ hspec $ do
 
         writeFile (srcDir </> relPath) content
 
-        runResourceT
-            $ sendFile srcDir relPath
-           $$ builderToByteString
-           =$ recvFile dstDir
+        runResourceT $ sendFile srcDir relPath $$ recvFile dstDir
 
         content' <- readFile (dstDir </> relPath)
         content' `shouldBe` content
 
         removeFile (srcDir </> relPath)
 
-        runResourceT
-            $ sendFile srcDir relPath
-           $$ builderToByteString
-           =$ recvFile dstDir
-
+        runResourceT $ sendFile srcDir relPath $$ recvFile dstDir
 
         exists <- doesFileExist (dstDir </> relPath)
         exists `shouldBe` False
