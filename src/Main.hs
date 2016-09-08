@@ -21,7 +21,7 @@ import           Data.Conduit.FSNotify      (sourceFileChanges, mkFileChangeSett
 import           Data.Conduit.Network       (appSink, appSource, clientSettings,
                                              runTCPClient, runTCPServer,
                                              serverSettings)
-import           Data.Word8                 (_0, _9, _colon, _hyphen)
+import           Data.Word8                 (_colon)
 import           Options.Applicative.Simple (addCommand, argument, auto,
                                              metavar, simpleOptions,
                                              simpleVersion, str)
@@ -225,13 +225,13 @@ sendFile root fp = do
         case eh of
             -- No file, send a -1 length to indicate file does not
             -- exist
-            Left _ex -> sendInteger (-1)
+            Left _ex -> sendInt (-1)
 
             -- File exists
             Right h -> do
                 -- Send the size of the file
                 size <- liftIO $ hFileSize h
-                sendInteger size
+                sendInt $ fromInteger size
 
                 -- And stream the contents
                 sourceHandle h
@@ -241,8 +241,8 @@ sendFile root fp = do
 -- | Send a raw integer. We follow something like the netstring
 -- protocol, and print the integer in decimal form followed by a
 -- colon.
-sendInteger :: Monad m => Integer -> Producer m ByteString
-sendInteger i = yield $ encodeUtf8 $ tshow i ++ ":"
+sendInt :: Monad m => Int -> Producer m ByteString
+sendInt i = yield $ encodeUtf8 $ tshow i ++ ":"
 
 -- | Send a filepath.
 sendFilePath :: Monad m => FilePath -> Producer m ByteString
@@ -251,7 +251,7 @@ sendFilePath fp = do
     let bs = encodeUtf8 $ pack fp :: ByteString
 
     -- Send the number of bytes
-    sendInteger $ fromIntegral $ length bs
+    sendInt $ length bs
 
     -- Send the actual path
     yield bs
@@ -268,7 +268,7 @@ recvFile root = do
     let fp = root </> fpRel
 
     -- Get the size of the file
-    fileLen <- recvInteger
+    fileLen <- recvInt
 
     if fileLen == (-1)
         -- We use -1 to indicate the file should be removed. Go ahead
@@ -284,53 +284,26 @@ recvFile root = do
             -- into the file
             takeCE fileLen =$= sinkFile fp
 
--- | Receive an integer sent by sendInteger.
-recvInteger :: (MonadThrow m, Integral i) => Sink ByteString m i
-recvInteger = do
-    -- Check for a hyphen (indicating a negative number). First we
-    -- peek at the next byte, leaving it on the stream in case it's
-    -- not a hyphen.
-    mnext <- peekCE
+-- | Receive an integer sent by sendInt.
+recvInt :: MonadThrow m => Sink ByteString m Int
+recvInt = do
+    -- Get all of the bytes up to the colon, convert to text, and fold
+    -- (aka concatenate) into a single chunk
+    intText <- takeWhileCE (/= _colon) =$= decodeUtf8C =$= foldC
 
-    -- We need to have some data. If we got a Nothing, we have an end
-    -- of stream, so we should throw that exception.
-    next <-
-        case mnext of
-            Nothing -> throw EndOfStream
-            Just next -> return next
+    -- Drop the colon character.
+    dropCE 1
 
-    isNeg <-
-        if next == _hyphen
-            then do
-                -- We did get a hyphen, so drop that byte from the
-                -- stream and return True
-                dropCE 1
-                return True
-
-                -- Not a hyphen, so return False and don't drop any
-                -- data
-            else return False
-
-    -- Take all bytes up until the terminating colon, and fold over
-    -- them with addDigit to sum up the result
-    x <- takeWhileCE (/= _colon) =$= foldMCE addDigit 0
-
-    -- Make sure we actually have a colon at the end
-    mw <- headCE
-    unless (mw == Just _colon) (throwM (MissingColon mw))
-
-    -- Negate the answer if necessary
-    return $! if isNeg then negate x else x
-  where
-    addDigit total w
-        | _0 <= w && w <= _9 = return (total * 10 + fromIntegral (w - _0))
-        | otherwise = throwM (InvalidByte w)
+    -- Convert to a String and then use the read function.
+    case readMay $ unpack intText of
+        Nothing -> error $ "Invalid integer: " ++ show intText
+        Just i -> return i
 
 -- | Receive a file path sent with sendFilePath
 recvFilePath :: MonadThrow m => Sink ByteString m FilePath
 recvFilePath = do
     -- Get the byte count
-    fpLen <- recvInteger
+    fpLen <- recvInt
 
     -- Read in the given number of bytes, decode as UTF-8 text, and
     -- then fold all of the chunks into a single Text value
@@ -338,13 +311,6 @@ recvFilePath = do
 
     -- Unpack the text value into a FilePath
     return $ unpack fpRelText
-
--- | Define an exception type for when something goes wrong
-data RecvIntegerException = InvalidByte Word8
-                          | MissingColon (Maybe Word8)
-                          | EndOfStream
-    deriving (Show, Typeable)
-instance Exception RecvIntegerException
 
 ---------------------------------------
 -- TEST SUITE
@@ -357,11 +323,11 @@ instance Exception RecvIntegerException
 -- including the test suite with the executable.
 spec :: IO ()
 spec = withArgs [] $ hspec $ do
-    -- Ensure that sending a value through sendInteger and recvInteger
-    -- comes back with the same result. This will generate random data
-    -- to test against.
-    prop "sendInteger/recvInteger is idempotent" $ \i -> do
-        res <- sendInteger i $$ recvInteger
+    -- Ensure that sending a value through sendInt and recvInt comes
+    -- back with the same result. This will generate random data to
+    -- test against.
+    prop "sendInt/recvInt is idempotent" $ \i -> do
+        res <- sendInt i $$ recvInt
         res `shouldBe` i
 
     -- Ensure that sending a value through sendFilePath and
