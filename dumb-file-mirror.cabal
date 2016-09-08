@@ -24,7 +24,7 @@ executable dumb-file-mirror
                      , conduit-extra
                      , directory
                      , filepath
-                     , fsnotify
+                     , fsnotify-conduit
                      , hspec
                      , optparse-simple
                      , temporary

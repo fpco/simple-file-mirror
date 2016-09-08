@@ -19,6 +19,7 @@
 import           ClassyPrelude.Conduit
 import qualified Data.ByteString.Builder    as BB
 import           Data.Conduit.Blaze         (builderToByteString)
+import           Data.Conduit.FSNotify      (sourceFileChanges, mkFileChangeSettings, eventPath)
 import           Data.Conduit.Network       (appSink, appSource, clientSettings,
                                              runTCPClient, runTCPServer,
                                              serverSettings)
@@ -27,13 +28,10 @@ import           Options.Applicative.Simple (addCommand, argument, auto,
                                              metavar, simpleOptions,
                                              simpleVersion, str)
 import           Paths_dumb_file_mirror     (version)
-import           System.Directory           (canonicalizePath,
-                                             createDirectoryIfMissing,
+import           System.Directory           (createDirectoryIfMissing,
                                              doesFileExist, removeFile)
 import           System.Environment         (withArgs)
-import           System.FilePath            (addTrailingPathSeparator,
-                                             takeDirectory)
-import qualified System.FSNotify            as FS
+import           System.FilePath            (takeDirectory)
 import           System.IO                  (IOMode (ReadMode), hFileSize,
                                              openBinaryFile)
 import           System.IO.Temp             (withSystemTempDirectory)
@@ -152,7 +150,7 @@ remote port dir =
         -- this _sink_. Our sink repeatedly runs recvFile until the
         -- stream is closed. Each call to recvFile reads a new file
         -- from the stream and writes it to disk.
-     $$ foreverCE (recvFile dir)
+     $$ peekForeverE (recvFile dir)
 
 -- | Run the local portion: connect to the remote process, watch for
 -- file changes, and on each change send the updated contents to the
@@ -168,12 +166,12 @@ local host port dir =
 
            -- Get a stream providing the file path of each file
            -- changed on the filesystem.
-         $ sourceFileChanges dir
+         $ sourceFileChanges (mkFileChangeSettings dir)
 
            -- Wait for every new changed file, and then call sendFile
            -- on it to create the binary data to be sent to the
            -- client.
-        $$ awaitForever (sendFile dir)
+        $$ awaitForever (sendFile dir . eventPath)
 
            -- To allow for efficient concatenation, Haskell offers a
            -- Builder value which efficiently fills up a buffer
@@ -199,85 +197,58 @@ local host port dir =
 -- CONDUIT UTILITY FUNCTIONS
 ---------------------------------------
 
--- | Watch for changes to a directory, and yield the file paths
--- downstream.
-sourceFileChanges :: MonadResource m
-                  => FilePath
-                  -> Producer m FilePath
-sourceFileChanges root =
-  -- The bracketP function allows us to safely allocate some resource
-  -- and guarantee it will be cleaned up. In our case, we are calling
-  -- startManager to allocate a file watching manager, and stopManager
-  -- to clean it up. These functions will under the surface tie in to
-  -- OS-specific file watch mechanisms, such as inotify on Linux.
-  bracketP FS.startManager FS.stopManager $ \man -> do
-    -- Get the absolute path of the root directory
-    root' <- liftIO $ canonicalizePath root
-
-    -- Create a channel for communication between two threads. Since
-    -- file watch events come in asynchronously on separate threads,
-    -- we want to fill up a channel with those events, and then below
-    -- read the values off that channel.
-    chan <- liftIO newTChanIO
-
-    -- Start watching a directory tree, accepting all events (const True).
-    liftIO $ void $ FS.watchTree man root' (const True) $ \event -> do
-        -- The complete file path of the event.
-        let fp = FS.eventPath event
-
-        -- Since we want the path relative to the directory root,
-        -- strip off the root from the file path
-        case stripPrefix (addTrailingPathSeparator root') fp of
-            Nothing -> error $ "sourceFileChanges: prefix not found " ++ show (root', fp)
-            Just suffix
-                -- Ignore changes to the root directory itself
-                | null suffix -> return ()
-
-                -- Got a change to the file, write it to the channel
-                | otherwise -> atomically $ writeTChan chan suffix
-
-    -- Read the next value off the channel and yield it downstream,
-    -- repeating forever.
-    forever $ do
-        suffix <- atomically $ readTChan chan
-        yield suffix
-
--- | Keep performing the given action as long as more data exists on
--- the stream.
-foreverCE :: Monad m => Sink ByteString m () -> Sink ByteString m ()
-foreverCE inner =
-    loop
-  where
-    loop = do
-        -- peek the next byte off the stream, but don't remove it.
-        mnext <- peekCE
-        case mnext of
-            -- Nothing else, exit!
-            Nothing -> return ()
-            Just _next -> do
-                -- Had another byte, perform the inner action and then
-                -- repeat.
-                inner
-                loop
-
+-- | Send a file over the network, in the format used by this package
+-- (see README.md).
 sendFile :: MonadResource m
-         => FilePath -- ^ root
-         -> FilePath -- ^ relative
+         => FilePath -- ^ root directory
+         -> FilePath -- ^ path relative to root
          -> Producer m BlazeBuilder
 sendFile root fp = do
+    -- Send the relative file path, so the other side knows where to
+    -- put the contents
     sendFilePath fp
 
+    -- The file may or may not exist. Checking for file existance is
+    -- actually open to a race condition: after we check for the file
+    -- and before we open it, some other process may delete
+    -- it. Therefore, the safe thing to do is open up the file, and
+    -- catch any exceptions that occur. For our purposes, we treat all
+    -- exceptions as "file does not exist," though something more
+    -- fine-grained could definitely be used instead.
+    --
+    -- The tryIO function will try to run the action, and if any IO
+    -- exceptions are thrown, return them as a Left value. Otherwise,
+    -- it will return the file handle as a Right value. This is the
+    -- Either sum type, and is a powerful feature of Haskell. To learn
+    -- more, see:
+    -- https://www.schoolofhaskell.com/school/to-infinity-and-beyond/pick-of-the-week/sum-types
     let open = tryIO $ openBinaryFile fpFull ReadMode
+
+        -- If the opening failed, we'll have an error message. So
+        -- there's nothing to close, just do nothing!
         close (Left _err) = return ()
+        -- Opening succeeded, so close the file handle.
         close (Right h) = hClose h
 
+    -- Grab the file handle...
     bracketP open close $ \eh ->
         case eh of
+            -- No file, send a -1 length to indicate file does not
+            -- exist
             Left _ex -> sendInteger (-1)
+
+            -- File exists
             Right h -> do
+                -- Send the size of the file
                 size <- liftIO $ hFileSize h
                 sendInteger size
+
+                -- And stream the contents, converting the raw
+                -- ByteStrings into builders for efficient buffer
+                -- packing
                 sourceHandle h =$= mapC BB.byteString
+
+    -- Send a flush signal to ensure that any incomplete chunks get sent over the network
     yield flushBuilder
   where
     fpFull = root </> fp
@@ -377,24 +348,6 @@ spec = withArgs [] $ hspec $ do
            $$ builderToByteString
            =$ recvFile dstDir
 
+
         exists <- doesFileExist (dstDir </> relPath)
         exists `shouldBe` False
-    it "sourceFileChanges" $ withSystemTempDirectory "source-file-changes" $ \root -> do
-        chan <- newTChanIO
-        let actions =
-                [ ("foo", Just "hello")
-                , ("bar", Just "world")
-                , ("foo", Just "!")
-                , ("bar", Nothing)
-                , ("foo", Nothing)
-                ]
-        runConcurrently $
-            Concurrently (runResourceT $ sourceFileChanges root $$ mapM_C (atomically . writeTChan chan)) <|>
-            Concurrently (forM_ actions $ \(path, mcontents) -> do
-                threadDelay 100000
-                case mcontents of
-                    Nothing -> removeFile (root </> path)
-                    Just contents -> writeFile (root </> path) (contents :: ByteString)) <|>
-            Concurrently (forM_ actions $ \(expected, _) -> do
-                actual <- atomically $ readTChan chan
-                actual `shouldBe` expected)
