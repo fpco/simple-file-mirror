@@ -65,7 +65,7 @@ As an example, if I wrote the words "Hello World" to the file
 "hello.txt", the network data sent would be:
 
 ```
-9:hello.txt11Hello World
+9:hello.txt11:Hello World
 ```
 
 Our program needs to implement a TCP client that can watch a directory
@@ -78,12 +78,22 @@ test suite in the program itself (though, in a more realistic
 application, we'd separate our code into a library, executable, and
 test suite).
 
+* * *
+
+__NOTE__ Just ignore all of the content below here, I'll likely delete
+it shortly. I'm writing up a blog post series to properly introduce
+the concepts in this program.
+
+## Quick intro to conduit
+
 This program is going to make heavy usage of the
 [conduit streaming data library](https://github.com/snoyberg/conduit#readme). You
 won't need to know much about conduit to follow. The important terms
 are *upstream* (where data is coming from into the current function)
 and *downstream* (where the current function is sending data). This
 will make more sense when we look at some of our test cases.
+
+**FIXME**
 
 ## Sending and receiving integers
 
