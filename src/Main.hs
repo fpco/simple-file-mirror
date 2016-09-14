@@ -326,14 +326,14 @@ spec = withArgs [] $ hspec $ do
     -- Ensure that sending a value through sendInt and recvInt comes
     -- back with the same result. This will generate random data to
     -- test against.
-    prop "sendInt/recvInt is idempotent" $ \i -> do
+    prop "sendInt/recvInt are inverses" $ \i -> do
         res <- sendInt i $$ recvInt
         res `shouldBe` i
 
     -- Ensure that sending a value through sendFilePath and
     -- recvFilePath comes back with the same result. This also works
     -- on random data.
-    prop "sendFilePath/recvFilePath is idempotent" $ \fp -> do
+    prop "sendFilePath/recvFilePath are inverses" $ \fp -> do
         res <- sendFilePath fp $$ recvFilePath
         res `shouldBe` fp
 
