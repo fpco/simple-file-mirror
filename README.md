@@ -85,5 +85,5 @@ file](https://github.com/fpco/simple-file-mirror/blob/master/src/Main.hs) which
 is heavily commented. In addition, this project is the topic of a blog post
 series on the [FP Complete blog](https://www.fpcomplete.com/blog):
 
-* [Practical Haskell: Dumb File Mirror (Part
+* [Practical Haskell: Simple File Mirror (Part
   1)](https://www.fpcomplete.com/blog/2016/09/practical-haskell-simple-file-mirror-1)
