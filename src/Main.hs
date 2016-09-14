@@ -25,7 +25,7 @@ import           Data.Word8                 (_colon)
 import           Options.Applicative.Simple (addCommand, argument, auto,
                                              metavar, simpleOptions,
                                              simpleVersion, str)
-import           Paths_dumb_file_mirror     (version)
+import           Paths_simple_file_mirror     (version)
 import           System.Directory           (createDirectoryIfMissing,
                                              doesFileExist, removeFile)
 import           System.Environment         (withArgs)
@@ -50,14 +50,14 @@ main = do
         -- Version of the executable. This $(...) syntax is Template
         -- Haskell, and the simpleVersion function will look up Git
         -- commit information at compile time, making the
-        -- dumb-file-mirror --version output much more useful:
+        -- simple-file-mirror --version output much more useful:
         --
-        -- $ dumb-file-mirror --version
+        -- $ simple-file-mirror --version
         -- Version 0.1.0.0, Git revision 7320af1acc8de1c1cd37f44590f5799f7493cc98 (dirty)
         $(simpleVersion version)
 
         -- A one-line header for the --help output
-        "dumb-file-mirror: Mirror file changes to a local host"
+        "simple-file-mirror: Mirror file changes to a local host"
 
         -- Longer description for the --help output
         desc
@@ -95,10 +95,10 @@ main = do
     -- This describes how we parse each of the command line
     -- arguments. To see how this affects output:
     --
-    -- $ dumb-file-mirror local
+    -- $ simple-file-mirror local
     -- Missing: HOST PORT DIRECTORY
     --
-    -- Usage: dumb-file-mirror local HOST PORT DIRECTORY
+    -- Usage: simple-file-mirror local HOST PORT DIRECTORY
     --   Send file changes
     hostArg = argument str (metavar "HOST")
     portArg = argument auto (metavar "PORT")

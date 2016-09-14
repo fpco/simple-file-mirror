@@ -1,8 +1,8 @@
-name:                dumb-file-mirror
+name:                simple-file-mirror
 version:             0.1.0.0
-synopsis:            A dumb tool to mirror changes in a directory between hosts
+synopsis:            A simple tool to mirror changes in a directory between hosts
 description:         Please see README.md
-homepage:            https://github.com/fpco/dumb-file-mirror#readme
+homepage:            https://github.com/fpco/simple-file-mirror#readme
 license:             MIT
 license-file:        LICENSE
 author:              Michael Snoyman
@@ -13,10 +13,10 @@ build-type:          Simple
 extra-source-files:  README.md ChangeLog.md
 cabal-version:       >=1.10
 
-executable dumb-file-mirror
+executable simple-file-mirror
   hs-source-dirs:      src
   main-is:             Main.hs
-  other-modules:       Paths_dumb_file_mirror
+  other-modules:       Paths_simple_file_mirror
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N
   build-depends:       base >= 4.9 && < 5
                      , bytestring
@@ -34,4 +34,4 @@ executable dumb-file-mirror
 
 source-repository head
   type:     git
-  location: https://github.com/fpco/dumb-file-mirror
+  location: https://github.com/fpco/simple-file-mirror
