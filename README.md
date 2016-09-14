@@ -1,7 +1,7 @@
 # simple-file-mirror
 
 [![Build Status](https://travis-ci.org/fpco/simple-file-mirror.svg?branch=master)](https://travis-ci.org/fpco/simple-file-mirror)
-[![Build status](https://ci.appveyor.com/api/projects/status/19mblbxaig48i26p/branch/master?svg=true)](https://ci.appveyor.com/project/snoyberg/simple-file-mirror/branch/master)
+[![Build status](https://ci.appveyor.com/api/projects/status/2wrkon04btyp68ru?svg=true)](https://ci.appveyor.com/project/snoyberg/simple-file-mirror)
 
 ## What it is
 
